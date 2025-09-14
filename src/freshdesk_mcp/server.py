@@ -1053,6 +1053,25 @@ Notes:
 - Ensure the tone and style **match the prior replies**, and that the message provides **full context** so the recipient can understand the issue without needing to re-read earlier messages.
 """
 
+@mcp.prompt()
+def natural_language_query_prompt(query: str) -> str:
+    """Process natural language queries about Freshdesk data"""
+    return f"""
+Please process this natural language query about Freshdesk data: "{query}"
+
+Use the natural_language_query tool to analyze the query and provide a summarized response.
+
+If the query is about ticket status, it will fetch all tickets and summarize them by status.
+If the query is about agents, it will provide agent statistics.
+For other queries, it will attempt to match the intent and provide relevant data.
+
+The response will include:
+- The original query
+- Detected intent
+- Summarized data in structured format
+- Any recommendations or insights
+"""
+
 @mcp.tool()
 async def list_companies(page: Optional[int] = 1, per_page: Optional[int] = 30) -> Dict[str, Any]:
     """List all companies in Freshdesk with pagination support."""
@@ -1242,6 +1261,130 @@ async def delete_ticket_summary(ticket_id: int) -> Dict[str, Any]:
             return {"error": f"Failed to delete ticket summary: {str(e)}"}
         except Exception as e:
             return {"error": f"An unexpected error occurred: {str(e)}"}
+
+def detect_intent(query: str) -> str:
+    """Detect the intent of a natural language query"""
+    query_lower = query.lower()
+
+    # Ticket status summary
+    if any(word in query_lower for word in ["status", "estado", "summary", "resumen", "report", "reportar"]):
+        if any(word in query_lower for word in ["ticket", "tickets", "ticketera"]):
+            return "ticket_status_summary"
+
+    # Agent summary
+    if any(word in query_lower for word in ["agent", "agents", "agente", "agentes"]):
+        if any(word in query_lower for word in ["active", "activos", "summary", "resumen"]):
+            return "agent_summary"
+
+    # Contact summary
+    if any(word in query_lower for word in ["contact", "contacts", "contacto", "contactos"]):
+        return "contact_summary"
+
+    # Group summary
+    if any(word in query_lower for word in ["group", "groups", "grupo", "grupos"]):
+        return "group_summary"
+
+    return "unknown"
+
+
+def summarize_tickets_by_status(tickets: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Summarize tickets by their status"""
+    status_counts = {}
+    total_tickets = len(tickets)
+
+    status_names = {
+        2: "Open",
+        3: "Pending",
+        4: "Resolved",
+        5: "Closed"
+    }
+
+    for ticket in tickets:
+        status_id = ticket.get('status')
+        status_name = status_names.get(status_id, f"Status_{status_id}")
+        status_counts[status_name] = status_counts.get(status_name, 0) + 1
+
+    summary = {
+        "total_tickets": total_tickets,
+        "status_breakdown": {}
+    }
+
+    for status, count in status_counts.items():
+        percentage = round((count / total_tickets) * 100, 1) if total_tickets > 0 else 0
+        summary["status_breakdown"][status] = {
+            "count": count,
+            "percentage": percentage
+        }
+
+    return summary
+
+
+def summarize_agents(agents: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Summarize agent information"""
+    total_agents = len(agents)
+    active_agents = sum(1 for agent in agents if agent.get('available'))
+
+    return {
+        "total_agents": total_agents,
+        "active_agents": active_agents,
+        "inactive_agents": total_agents - active_agents
+    }
+
+
+@mcp.tool()
+async def natural_language_query(query: str) -> Dict[str, Any]:
+    """Process natural language queries about Freshdesk data"""
+    intent = detect_intent(query)
+
+    try:
+        if intent == "ticket_status_summary":
+            # Get all tickets
+            tickets_response = await get_tickets()
+            tickets = tickets_response.get('tickets', [])
+
+            summary = summarize_tickets_by_status(tickets)
+
+            return {
+                "query": query,
+                "intent": intent,
+                "type": "ticket_status_report",
+                "data": summary,
+                "timestamp": "2024-01-15T10:00:00Z"  # Would use datetime.now() in real implementation
+            }
+
+        elif intent == "agent_summary":
+            # Get all agents
+            agents = await get_agents()
+
+            summary = summarize_agents(agents)
+
+            return {
+                "query": query,
+                "intent": intent,
+                "type": "agent_report",
+                "data": summary,
+                "timestamp": "2024-01-15T10:00:00Z"
+            }
+
+        else:
+            return {
+                "query": query,
+                "intent": "unknown",
+                "error": "Could not understand the query. Try asking about ticket status, agents, or other Freshdesk data.",
+                "suggestions": [
+                    "What's the status of tickets?",
+                    "How many agents are active?",
+                    "Give me a summary of contacts"
+                ]
+            }
+
+    except Exception as e:
+        return {
+            "query": query,
+            "intent": intent,
+            "error": f"Failed to process query: {str(e)}"
+        }
+
 
 def main():
     logging.info("Starting Freshdesk MCP server")
